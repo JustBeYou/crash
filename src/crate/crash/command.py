@@ -212,160 +212,22 @@ def _parse_statements(lines):
         yield '\n'.join(parts)
 
 
-class CrateShell:
+class ReconnectException(Exception):
+    pass
+
+
+class Connection:
 
     def __init__(self,
-                 crate_hosts=['localhost:4200'],
-                 output_writer=None,
+                 crate_hosts,
                  error_trace=False,
-                 is_tty=True,
-                 autocomplete=True,
-                 autocapitalize=True,
                  verify_ssl=True,
                  cert_file=None,
                  key_file=None,
                  ca_cert_file=None,
                  username=None,
-                 password=None,
-                 schema=None,
-                 timeout=None):
-        self.last_connected_servers = []
-
-        self.exit_code = 0
-        self.expanded_mode = False
-        self.sys_info_cmd = SysInfoCommand(self)
-        self.commands = {
-            'q': self._quit,
-            'c': self._connect,
-            'connect': self._connect,
-            'dt': self._show_tables,
-            'sysinfo': self.sys_info_cmd.execute,
-        }
-        self.commands.update(built_in_commands)
-        self.logger = ColorPrinter(is_tty)
-
-        self.output_writer = output_writer or OutputWriter(PrintWrapper(), is_tty)
-        self.error_trace = error_trace
-        self._autocomplete = autocomplete
-        self._autocapitalize = autocapitalize
-        self.verify_ssl = verify_ssl
-        self.cert_file = cert_file
-        self.key_file = key_file
-        self.ca_cert_file = ca_cert_file
-        self.username = username
-        self.password = password
-        self.schema = schema
-        self.timeout = timeout
-
-        # establish connection
-        self.cursor = None
-        self.connection = None
-        self._do_connect(crate_hosts)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.exit()
-
-    def get_num_columns(self):
-        return 80
-
-    def should_autocomplete(self):
-        return self._autocomplete
-
-    def should_autocapitalize(self):
-        return self._autocapitalize
-
-    def pprint(self, rows, cols):
-        result = Result(cols,
-                        rows,
-                        self.cursor.rowcount,
-                        self.cursor.duration,
-                        self.get_num_columns())
-        self.output_writer.write(result)
-
-    def process_iterable(self, stdin):
-        any_statement = False
-        for statement in _parse_statements(stdin):
-            self._exec(statement)
-            any_statement = True
-        return any_statement
-
-    def process(self, text):
-        if text.startswith('\\'):
-            self._try_exec_cmd(text.lstrip('\\'))
-        else:
-            for statement in _parse_statements([text]):
-                self._exec(statement)
-
-    def exit(self):
-        self.close()
-        return self.exit_code
-
-    def close(self):
-        if self.is_closed():
-            raise ProgrammingError('CrateShell is already closed')
-        if self.cursor:
-            self.cursor.close()
-        self.cursor = None
-        if self.connection:
-            self.connection.close()
-        self.connection = None
-
-    def is_closed(self):
-        return not (self.cursor and self.connection)
-
-    @noargs_command
-    def _show_tables(self, *args):
-        """ print the existing tables within the 'doc' schema """
-        v = self.connection.lowest_server_version
-        schema_name = \
-            "table_schema" if v >= TABLE_SCHEMA_MIN_VERSION else "schema_name"
-        table_filter = \
-            " AND table_type = 'BASE TABLE'" if v >= TABLE_TYPE_MIN_VERSION else ""
-
-        self._exec("SELECT format('%s.%s', {schema}, table_name) AS name "
-                   "FROM information_schema.tables "
-                   "WHERE {schema} NOT IN ('sys','information_schema', 'pg_catalog')"
-                   "{table_filter}"
-                   .format(schema=schema_name, table_filter=table_filter))
-
-    @noargs_command
-    def _quit(self, *args):
-        """ quit crash """
-        self.logger.warn('Bye!')
-        sys.exit(self.exit())
-
-    def is_conn_available(self):
-        return self.connection and \
-            self.connection.lowest_server_version != StrictVersion("0.0.0")
-
-    def _do_connect(self, servers):
-        self.last_connected_servers = servers
-        if self.cursor or self.connection:
-            self.close()  # reset open cursor and connection
-        self.connection = connect(servers,
-                                  error_trace=self.error_trace,
-                                  verify_ssl_cert=self.verify_ssl,
-                                  cert_file=self.cert_file,
-                                  key_file=self.key_file,
-                                  ca_cert=self.ca_cert_file,
-                                  username=self.username,
-                                  password=self.password,
-                                  schema=self.schema,
-                                  timeout=self.timeout)
-        self.cursor = self.connection.cursor()
-        self._fetch_session_info()
-
-    def _connect(self, servers):
-        """ connect to the given server, e.g.: \\connect localhost:4200 """
-        self._do_connect(servers.split(' '))
-        self._verify_connection(verbose=True)
-
-    def reconnect(self):
-        """Connect with same configuration and to last connected servers"""
-        self._do_connect(self.last_connected_servers)
+                 password=None):
+        pass
 
     def _verify_connection(self, verbose=False):
         results = []
@@ -422,6 +284,115 @@ class CrateShell:
                 current_schema AS "schema";
             """)
         return self.cursor.fetchone()
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+
+class CrateShell:
+
+    def __init__(self,
+                 connection,
+                 output_writer=None,
+                 is_tty=True,
+                 autocomplete=True,
+                 autocapitalize=True):
+        self.exit_code = 0
+        self.expanded_mode = False
+        self.sys_info_cmd = SysInfoCommand(self)
+        self.commands = {
+            'q': self._quit,
+            'c': self._connect,
+            'connect': self._connect,
+            'dt': self._show_tables,
+            'sysinfo': self.sys_info_cmd.execute,
+        }
+        self.commands.update(built_in_commands)
+        self.logger = ColorPrinter(is_tty)
+        self.conn = connection
+
+        self.output_writer = output_writer or OutputWriter(PrintWrapper(), is_tty)
+        self._autocomplete = autocomplete
+        self._autocapitalize = autocapitalize
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.exit()
+
+    def get_num_columns(self):
+        return 80
+
+    def should_autocomplete(self):
+        return self._autocomplete
+
+    def should_autocapitalize(self):
+        return self._autocapitalize
+
+    def pprint(self, rows, cols):
+        result = Result(cols,
+                        rows,
+                        self.cursor.rowcount,
+                        self.cursor.duration,
+                        self.get_num_columns())
+        self.output_writer.write(result)
+
+    def process_iterable(self, stdin):
+        any_statement = False
+        for statement in _parse_statements(stdin):
+            self._exec(statement)
+            any_statement = True
+        return any_statement
+
+    def process(self, text):
+        if text.startswith('\\'):
+            self._try_exec_cmd(text.lstrip('\\'))
+        else:
+            for statement in _parse_statements([text]):
+                self._exec(statement)
+
+    def exit(self):
+        self.close()
+        return self.exit_code
+
+    def close(self):
+        if not self.connection:
+            raise ProgrammingError('CrateShell is already closed')
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+
+    def is_closed(self):
+        return not self.connection
+
+    @noargs_command
+    def _show_tables(self, *args):
+        """ print the existing tables within the 'doc' schema """
+        v = self.connection.lowest_server_version
+        schema_name = \
+            "table_schema" if v >= TABLE_SCHEMA_MIN_VERSION else "schema_name"
+        table_filter = \
+            " AND table_type = 'BASE TABLE'" if v >= TABLE_TYPE_MIN_VERSION else ""
+
+        self._exec("SELECT format('%s.%s', {schema}, table_name) AS name "
+                   "FROM information_schema.tables "
+                   "WHERE {schema} NOT IN ('sys','information_schema', 'pg_catalog')"
+                   "{table_filter}"
+                   .format(schema=schema_name, table_filter=table_filter))
+
+    @noargs_command
+    def _quit(self, *args):
+        """ quit crash """
+        self.logger.warn('Bye!')
+        sys.exit(self.exit())
+
+    def reconnect(self):
+        """Connect with same configuration and to last connected servers"""
+        raise ReconnectException()
 
     def _try_exec_cmd(self, line):
         words = line.split(' ', 1)
@@ -547,20 +518,35 @@ def get_information_schema_query(lowest_server_version):
     return information_schema_query.format(schema=schema_name)
 
 
-def main():
-    is_tty = sys.stdout.isatty()
-    printer = ColorPrinter(is_tty)
-    output_writer = OutputWriter(PrintWrapper(), is_tty)
+def _resolve_pw(is_tty, force_passwd_prompt):
+    password = None
+    # If password prompt is not forced try to get it from env. variable.
+    if not force_passwd_prompt:
+        password = os.environ.get('CRATEPW', None)
+    # Prompt for password immediately to avoid that the first time trying to
+    # connect to the server runs into an `Unauthorized` excpetion
+    # is_tty = False
+    if force_passwd_prompt and not password and is_tty:
+        password = getpass()
+    return password
 
+
+def _init_conf_or_exit(printer, output_writer):
     config = parse_config_path()
-    conf = None
     try:
-        conf = Configuration(config)
+        return Configuration(config)
     except ConfigurationError as e:
         printer.warn(str(e))
         parser = get_parser(output_writer.formats)
         parser.print_usage()
         sys.exit(1)
+
+
+def main():
+    is_tty = sys.stdout.isatty()
+    printer = ColorPrinter(is_tty)
+    output_writer = OutputWriter(PrintWrapper(), is_tty)
+    conf = _init_conf_or_exit(printer, output_writer)
     parser = get_parser(output_writer.formats, conf=conf)
     try:
         args = parser.parse_args()
@@ -573,84 +559,41 @@ def main():
         printer.info(crash_version)
         sys.exit(0)
 
-    crate_hosts = [host_and_port(h) for h in args.hosts]
-    error_trace = args.verbose > 0
-
-    force_passwd_prompt = args.force_passwd_prompt
-    password = None
-
-    # If password prompt is not forced try to get it from env. variable.
-    if not force_passwd_prompt:
-        password = os.environ.get('CRATEPW', None)
-
-    # Prompt for password immediately to avoid that the first time trying to
-    # connect to the server runs into an `Unauthorized` excpetion
-    # is_tty = False
-    if force_passwd_prompt and not password and is_tty:
-        password = getpass()
-
-    # Tries to create a connection to the server.
-    # Prompts for the password automatically if the server only accepts
-    # password authentication.
-    cmd = None
-    try:
-        cmd = _create_shell(crate_hosts, error_trace, output_writer, is_tty,
-                            args, password=password)
-    except (ProgrammingError, LocationParseError) as e:
-        if '401' in e.message and not force_passwd_prompt:
-            if is_tty:
-                password = getpass()
-            try:
-                cmd = _create_shell(crate_hosts, error_trace, output_writer,
-                                    is_tty, args, password=password)
-            except (ProgrammingError, LocationParseError) as ex:
-                printer.warn(str(ex))
-                sys.exit(1)
-        else:
-            raise e
-    except Exception as e:
-        printer.warn(str(e))
-        sys.exit(1)
-
-    cmd._verify_connection(verbose=error_trace)
-    if not cmd.is_conn_available():
-        sys.exit(1)
-
-    done = False
-    stdin_data = get_stdin()
-    if args.sysinfo:
-        cmd.output_writer.output_format = 'mixed'
-        cmd.sys_info_cmd.execute()
-        done = True
-    if args.command:
-        cmd.process(args.command)
-        done = True
-    elif stdin_data:
-        if cmd.process_iterable(stdin_data):
+    password = _resolve_pw(is_tty, args.force_passwd_prompt)
+    with Connection(
+        crate_hosts=map(host_and_port, args.hosts),
+        error_trace=args.verbose > 0,
+        verify_ssl=args.verify_ssl,
+        cert_file=args.cert_file,
+        key_file=args.key_file,
+        ca_cert_file=args.ca_cert_file,
+        username=args.username,
+        password=password
+    ) as conn:
+        cmd = CrateShell(
+            conn,
+            output_writer,
+            is_tty,
+            args.autocomplete,
+            args.autocapitalize
+        )
+        done = False
+        stdin_data = get_stdin()
+        if args.sysinfo:
+            cmd.output_writer.output_format = 'mixed'
+            cmd.sys_info_cmd.execute()
             done = True
-    if not done:
-        from .repl import loop
-        loop(cmd, args.history)
-    conf.save()
-    sys.exit(cmd.exit())
-
-
-def _create_shell(crate_hosts, error_trace, output_writer, is_tty, args,
-                  timeout=None, password=None):
-    return CrateShell(crate_hosts,
-                      error_trace=error_trace,
-                      output_writer=output_writer,
-                      is_tty=is_tty,
-                      autocomplete=args.autocomplete,
-                      autocapitalize=args.autocapitalize,
-                      verify_ssl=args.verify_ssl,
-                      cert_file=args.cert_file,
-                      key_file=args.key_file,
-                      ca_cert_file=args.ca_cert_file,
-                      username=args.username,
-                      password=password,
-                      schema=args.schema,
-                      timeout=timeout)
+        if args.command:
+            cmd.process(args.command)
+            done = True
+        elif stdin_data:
+            if cmd.process_iterable(stdin_data):
+                done = True
+        if not done:
+            from .repl import loop
+            loop(cmd, args.history)
+        conf.save()
+        sys.exit(cmd.exit())
 
 
 def file_with_permissions(path):
